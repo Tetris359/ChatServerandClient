@@ -1,0 +1,119 @@
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.io.*;
+import java.net.Socket;
+import java.util.HashSet;
+import java.util.Set;
+
+public class ChatClients {
+    private static final String SERVER_ADDRESS = "localhost"; // Адрес сервера
+    private static final int PORT = 8998; // Порт сервера
+    private static JTextArea textArea;
+    private static JTextField textField;
+    private static PrintWriter writer;
+    private static Set<String> blockedUsers = new HashSet<>();
+    private static String username;
+    private static boolean isBlocked = false; // Флаг блокировки
+
+    public static void main(String[] args) {
+        JFrame frame = new JFrame("Чат-клиент");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 300);
+
+        textArea = new JTextArea();
+        textArea.setEditable(false);
+        JScrollPane scrollPane = new JScrollPane(textArea);
+        frame.add(scrollPane, BorderLayout.CENTER);
+
+        textField = new JTextField();
+        frame.add(textField, BorderLayout.SOUTH);
+
+        username = JOptionPane.showInputDialog(frame, "Введите ваше имя:");
+        if (username == null || username.trim().isEmpty()) {
+            System.exit(0);
+        }
+
+        try {
+            Socket socket = new Socket(SERVER_ADDRESS, PORT);
+            System.out.println("Подключено к серверу.");
+            BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            writer = new PrintWriter(socket.getOutputStream(), true);
+
+            new Thread(() -> {
+                try {
+                    String message;
+                    while ((message = reader.readLine()) != null) {
+                        if (!isBlockedUser(message)) {
+                            textArea.append(message + "\n");
+                        } else if (message.contains(username + " заблокирован.")) {
+                            isBlocked = true; // Устанавливаем флаг блокировки
+                            JOptionPane.showMessageDialog(frame, "Вы были заблокированы. Вы не можете отправлять сообщения.", "Блокировка", JOptionPane.WARNING_MESSAGE);
+                        }
+                    }
+                } catch (IOException e) {
+                    System.err.println("Ошибка чтения с сервера: " + e.getMessage());
+                }
+            }).start();
+
+            textField.addActionListener(new ActionListener() {
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    String message = textField.getText();
+                    if (!message.isEmpty()) {
+                        if (isBlocked) { // Проверяем, заблокирован ли пользователь
+                            JOptionPane.showMessageDialog(frame, "Вы не можете отправлять сообщения, так как вы заблокированы.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+                            textField.setText(""); // Очищаем текстовое поле
+                            return; // Выходим из метода
+                        }
+
+                        String selectedText = textArea.getSelectedText();
+                        if (selectedText != null && !selectedText.isEmpty()) {
+                            writer.println(username + " (ответ на: " + selectedText + "): " + message);
+                        } else {
+                            writer.println(username + ": " + message);
+                        }
+                        textField.setText(""); // Очищаем текстовое поле
+                    }
+                }
+            });
+
+            JButton blockButton = new JButton("Заблокировать/Разблокировать пользователя");
+            blockButton.addActionListener(new ActionListener() {
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    String userToBlock = JOptionPane.showInputDialog(frame, "Введите имя пользователя для блокировки/разблокировки:");
+                    if (userToBlock != null && !userToBlock.trim().isEmpty()) {
+                        if (blockedUsers.contains(userToBlock)) {
+                            blockedUsers.remove(userToBlock);
+                            JOptionPane.showMessageDialog(frame, userToBlock + " разблокирован.");
+                            writer.println(username + " разблокировал пользователя: " + userToBlock); // Уведомляем сервер
+                        } else {
+                            blockedUsers.add(userToBlock);
+                            JOptionPane.showMessageDialog(frame, userToBlock + " заблокирован.");
+                            writer.println(username + " заблокировал пользователя: " + userToBlock); // Уведомляем сервер
+                        }
+                    }
+                }
+            });
+            frame.add(blockButton, BorderLayout.NORTH); // Добавляем кнопку в верхнюю часть окна
+
+        } catch (IOException e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(frame, "Не удалось подключиться к серверу.", "Ошибка", JOptionPane.ERROR_MESSAGE);
+            System.exit(0);
+        }
+
+        frame.setVisible(true);
+    }
+
+    private static boolean isBlockedUser(String message) {
+        for (String blockedUser : blockedUsers) {
+            if (message.startsWith(blockedUser + ":") || message.contains("ответ на: " + blockedUser)) {
+                return true; // Сообщение от заблокированного пользователя
+            }
+        }
+        return false; // Сообщение не от заблокированного пользователя
+    }
+}
