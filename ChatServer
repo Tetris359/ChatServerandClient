@@ -1,0 +1,84 @@
+import java.io.*;
+import java.net.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+
+public class ChatServer {
+
+    private static final int PORT = 8998;
+    private static List<ClientHandler> clientHandlers = new ArrayList<>();
+
+    public static void main(String[] args) {
+        System.out.println("Сервер запущен...");
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            while (true) {
+                new ClientHandler(serverSocket.accept()).start();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static class ClientHandler extends Thread {
+        private Socket socket;
+        private PrintWriter out;
+        private BufferedReader in;
+        private String username;
+        private HashSet<String> blockedUsers = new HashSet<>();
+
+        public ClientHandler(Socket socket) {
+            this.socket = socket;
+        }
+
+        public void run() {
+            try {
+                in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                out = new PrintWriter(socket.getOutputStream(), true);
+
+                // Получаем имя пользователя
+                username = in.readLine();
+                broadcastUserList(); // Обновляем список пользователей
+
+                String message;
+                while ((message = in.readLine()) != null) {
+                    if (message.startsWith("BLOCK:")) {
+                        String userToBlock = message.substring(6);
+                        blockedUsers.add(userToBlock); // Добавляем пользователя в заблокированные
+                        out.println("Вы заблокировали пользователя: " + userToBlock);
+                    } else {
+                        broadcastMessage(message); // Рассылаем сообщение всем клиентам
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                clientHandlers.remove(this);
+                broadcastUserList(); // Обновляем список пользователей при выходе клиента
+            }
+        }
+
+        private void broadcastMessage(String message) {
+            for (ClientHandler client : clientHandlers) {
+                if (!client.blockedUsers.contains(username) && !client.blockedUsers.contains(client.username)) {
+                    client.out.println(message); // Отправляем сообщение только тем, кто не заблокировал отправителя
+                }
+            }
+        }
+
+        private void broadcastUserList() {
+            StringBuilder userList = new StringBuilder("USERLIST:");
+            for (ClientHandler client : clientHandlers) {
+                userList.append(client.username).append(","); // Формируем список пользователей
+            }
+            for (ClientHandler client : clientHandlers) {
+                client.out.println(userList.toString()); // Отправляем список всем клиентам
+            }
+        }
+    }
+}
