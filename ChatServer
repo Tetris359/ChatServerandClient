@@ -1,169 +1,87 @@
-import javax.swing.*;
-import java.awt.*;
-import java.awt.event.*;
 import java.io.*;
 import java.net.*;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.util.*;
 
-public class ChatClient {
-    private static final String SERVER_ADDRESS = "localhost";
-    private static final int SERVER_PORT = 12345;
-    private static Socket socket;
-    private static PrintWriter out;
-    private static Timer timer;
-    private static int secondsElapsed = 0;
+public class ChatServer {
+    private static final int PORT = 12345;
+    private static Set<ClientHandler> clientHandlers = new HashSet<>();
 
     public static void main(String[] args) {
-        JFrame frame = new JFrame("Chat Client");
-        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setSize(400, 400);
-
-        JTextArea textArea = new JTextArea();
-        textArea.setEditable(false);
-        frame.add(new JScrollPane(textArea), BorderLayout.CENTER);
-
-        JLabel timeLabel = new JLabel("Время: 00:00:00");
-        frame.add(timeLabel, BorderLayout.NORTH);
-
-        // Панель для ввода сообщения и кнопок управления секундомером
-        JPanel inputPanel = new JPanel();
-        inputPanel.setLayout(new BorderLayout());
-
-        JTextField textField = new JTextField();
-        inputPanel.add(textField, BorderLayout.CENTER);
-
-        // Панель для кнопок управления секундомером
-        JPanel timerPanel = new JPanel();
-        timerPanel.setLayout(new GridLayout(3, 1)); // Вертикальное расположение кнопок
-
-        JButton startTimerButton = new JButton("Запустить секундомер");
-        JButton stopTimerButton = new JButton("Остановить секундомер");
-        JButton resetTimerButton = new JButton("Сбросить секундомер");
-
-        timerPanel.add(startTimerButton);
-        timerPanel.add(stopTimerButton);
-        timerPanel.add(resetTimerButton);
-
-        inputPanel.add(timerPanel, BorderLayout.EAST); // Размещаем панель с кнопками справа
-
-        frame.add(inputPanel, BorderLayout.SOUTH);
-
-        textField.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent e) {
-                sendMessage(textField.getText());
-                textField.setText("");
-            }
-        });
-
-        // Добавляем MouseListener для обработки выделенного текста
-        textArea.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                int start = textArea.getSelectionStart();
-                int end = textArea.getSelectionEnd();
-                if (start != end) { // Если текст выделен
-                    String selectedText = textArea.getSelectedText();
-                    replyToMessage(selectedText, textField);
-                }
-            }
-        });
-
-        startTimerButton.addActionListener(e -> startTimer(timeLabel));
-        stopTimerButton.addActionListener(e -> stopTimer());
-        resetTimerButton.addActionListener(e -> resetTimer(timeLabel));
-
-        frame.setVisible(true);
-
-        String name = JOptionPane.showInputDialog("Введите ваше имя:");
-        connectToServer(name, textArea);
-    }
-
-    private static void connectToServer(String name, JTextArea textArea) {
-        try {
-            socket = new Socket(SERVER_ADDRESS, SERVER_PORT);
-            out = new PrintWriter(socket.getOutputStream(), true);
-            out.println(name);
-
-            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            String message;
-            while ((message = in.readLine()) != null) {
-                textArea.append(getCurrentTime() + " " + message + "\n");
+        System.out.println("Chat server started...");
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            while (true) {
+                new ClientHandler(serverSocket.accept()).start();
             }
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    private static void sendMessage(String message) {
-        if (message != null && !message.trim().isEmpty()) {
-            out.println(message);
+    private static class ClientHandler extends Thread {
+        private Socket socket;
+        private PrintWriter out;
+        private BufferedReader in;
+        private String clientName;
+        private Set<String> blockedUsers = new HashSet<>();
+
+        public ClientHandler(Socket socket) {
+            this.socket = socket;
         }
-    }
-    private static void startTimer(JLabel timeLabel) {
-        timer = new Timer(1000, new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                secondsElapsed++;
-                timeLabel.setText(formatTime(secondsElapsed));
+
+        public void run() {
+            try {
+                in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                out = new PrintWriter(socket.getOutputStream(), true);
+
+                // Получаем имя клиента
+                out.println("Введите ваше имя:");
+                clientName = in.readLine();
+
+                synchronized (clientHandlers) {
+                    clientHandlers.add(this);
+                }
+
+                // Уведомляем всех клиентов о новом подключении
+                broadcast(clientName + " присоединился к чату.", null);
+
+                String message;
+                while ((message = in.readLine()) != null) {
+                    if (message.startsWith("/block ")) {
+                        String userToBlock = message.split(" ")[1];
+                        blockedUsers.add(userToBlock);
+                        out.println("Вы заблокировали пользователя " + userToBlock);
+                    } else if (message.startsWith("/unblock ")) {
+                        String userToUnblock = message.split(" ")[1];
+                        blockedUsers.remove(userToUnblock);
+                        out.println("Вы разблокировали пользователя " + userToUnblock);
+                    } else {
+                        broadcast(clientName + ": " + message, blockedUsers);
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                synchronized (clientHandlers) {
+                    clientHandlers.remove(this);
+                }
+                // Уведомляем всех клиентов о выходе клиента
+                broadcast(clientName + " вышел из чата.", null);
             }
-        });
-        timer.start();
-    }
-
-    private static void stopTimer() {
-        if (timer != null) {
-            timer.stop();
         }
-    }
 
-    private static void resetTimer(JLabel timeLabel) {
-        if (timer != null) {
-            timer.stop();
+        private void broadcast(String message, Set<String> blockedUsers) {
+            synchronized (clientHandlers) {
+                for (ClientHandler handler : clientHandlers) {
+                    if (!handler.blockedUsers.contains(clientName)) {
+                        handler.out.println(message);
+                    }
+                }
+            }
         }
-        secondsElapsed = 0;
-        timeLabel.setText("Время: 00:00:00");
-    }
-
-    private static String formatTime(int totalSeconds) {
-        int hours = totalSeconds / 3600;
-        int minutes = (totalSeconds % 3600) / 60;
-        int seconds = totalSeconds % 60;
-        return String.format("Время: %02d:%02d:%02d", hours, minutes, seconds);
-    }
-
-    private static String getCurrentTime() {
-        SimpleDateFormat sdf = new SimpleDateFormat("HH:mm:ss");
-        return sdf.format(new Date());
-    }
-
-    // Метод для выделения текста и отправки сообщения в ответ на конкретное сообщение
-    private static void replyToMessage(String originalMessage, JTextField textField) {
-        // Предполагаем, что сообщение имеет формат "Имя: текст"
-        String[] parts = originalMessage.split(":", 2); // Разделяем на имя и текст
-        if (parts.length == 2) {
-            String userName = parts[0].trim(); // Имя пользователя
-            String messageText = parts[1].trim(); // Текст сообщения
-
-            // Форматируем ответ
-            String formattedReply = userName + ": (Ответ на: " + originalMessage + "), ";
-            textField.setText(formattedReply); // Устанавливаем ответ в текстовое поле
-            textField.requestFocus(); // Устанавливаем фокус на текстовое поле
-        } else {
-            // Если сообщение не соответствует ожидаемому формату, просто добавляем текст
-            textField.setText("(Ответ на: " + originalMessage + "), ");
-            textField.requestFocus();
-        }
-    }
-
-
-    // Метод для блокировки пользователя
-    private static void blockUser(String userName) {
-        out.println("/block " + userName);
-    }
-
-    // Метод для разблокировки пользователя
-    private static void unblockUser(String userName) {
-        out.println("/unblock " + userName);
     }
 }
